@@ -8,7 +8,7 @@ import { MongoDBAtlasVectorSearch } from '@langchain/mongodb'
 import { MongoClient, ServerApiVersion } from 'mongodb'
 // const uri = "mongodb+srv://safi:tK5qBnf1UdPiAM3g@cluster0.yrhbvyy.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0";
 const uri = 'mongodb+srv://safi:tK5qBnf1UdPiAM3g@cluster0.qle2k13.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0'
-const client = new MongoClient(uri)
+export const client = new MongoClient(uri)
 
 const llm = new ChatGoogleGenerativeAI({
     model: "gemini-1.5-flash",  // Use Gemini 1.5 Flash model
