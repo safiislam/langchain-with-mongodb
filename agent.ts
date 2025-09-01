@@ -1,4 +1,3 @@
-import { BaseMessage } from "@langchain/core/messages"
 import { Annotation } from "@langchain/langgraph"
 import { tool } from "@langchain/core/tools"
 import { MongoClient } from "mongodb"
@@ -8,6 +7,7 @@ import { z } from "zod"
 import { MongoDBAtlasVectorSearch } from "@langchain/mongodb"
 import { GoogleGenerativeAIEmbeddings } from "@langchain/google-genai"
 import { AIMessage, BaseMessage, HumanMessage } from "@langchain/core/messages"
+import { ChatPromptTemplate, MessagesPlaceholder } from "@langchain/core/prompts";
 import "dotenv/config"
 
 
@@ -102,7 +102,7 @@ export async function callAgent(client: MongoClient, query: string, thread_id: s
                 return JSON.stringify({
                     error: "Failed to search inventory",
                     details: error.message,
-                    query: query
+                    query: query as any
                 })
             }
         },
@@ -129,8 +129,72 @@ export async function callAgent(client: MongoClient, query: string, thread_id: s
         function shouldContinue(state: typeof GraphState.State) {
             const messages = state.messages
             const lastMessage = messages[messages.length - 1] as AIMessage
+            if (lastMessage.tool_calls?.length) {
+                return 'tools'
+            }
+            return "__end__"
         }
-    } catch (error) {
+        async function callModel(state: typeof GraphState.State) {
+            return retryWithBackoff(async () => {
+                const prompt = ChatPromptTemplate.fromMessages([
+                    [
+                        "system", // System message defines the AI's role and behavior
+                        `You are a helpful E-commerce Chatbot Agent for a furniture store. 
 
+IMPORTANT: You have access to an item_lookup tool that searches the furniture inventory database. ALWAYS use this tool when customers ask about furniture items, even if the tool returns errors or empty results.
+
+When using the item_lookup tool:
+- If it returns results, provide helpful details about the furniture items
+- If it returns an error or no results, acknowledge this and offer to help in other ways
+- If the database appears to be empty, let the customer know that inventory might be being updated
+
+Current time: {time}`,
+                    ],
+                    new MessagesPlaceholder("messages"),
+                ])
+            })
+            const formattedPrompt = await prompt.formatMessages({
+                time: new Date().toISOString(),
+                messages: state.messages,
+            })
+            const result = await model.invoke(formattedPrompt)
+            return { messages: [result] }
+            const workflow = new StateGraph(GraphState)
+                .addNode('agent', callModel)
+                .addNode("tools", toolNode)
+                .addEdge("__start__", "agent")
+                .addConditionalEdges("agent", shouldContinue)
+                .addEdge("tools", "agent")
+
+            const checkpointer = new MongoDBSaver({ client, dbName })
+            const app = workflow.compile({ checkpointer })
+            // Execute the workflow
+            const finalState = await app.invoke(
+                {
+                    messages: [new HumanMessage(query)], // Start with user's question
+                },
+                {
+                    recursionLimit: 15,                   // Prevent infinite loops
+                    configurable: { thread_id: thread_id } // Conversation thread identifier
+                }
+            )
+
+            // Extract the final response from the conversation
+            const response = finalState.messages[finalState.messages.length - 1].content
+            console.log("Agent response:", response)
+
+            return response // Return the AI's final response
+        }
+    } catch (error: any) {
+        // Handle different types of errors with user-friendly messages
+        console.error("Error in callAgent:", error.message)
+
+        if (error.status === 429) { // Rate limit error
+            throw new Error("Service temporarily unavailable due to rate limits. Please try again in a minute.")
+        } else if (error.status === 401) { // Authentication error
+            throw new Error("Authentication failed. Please check your API configuration.")
+        } else { // Generic error
+            throw new Error(`Agent failed: ${error.message}`)
+        }
     }
 }
